@@ -10,12 +10,12 @@ WEIGHT=$(jq -r '.weight' data.json)
 TYPE=$(jq -r '.types[0].type.name' data.json)
 
 # 2️⃣ Convert units (decimetres→m, hectograms→kg)
-HEIGHT_M=$(echo "$HEIGHT" | awk '{printf "%.1f", $1/10}')
-WEIGHT_KG=$(echo "$WEIGHT" | awk '{printf "%.1f", $1/10}')
+formatted_height=$(echo "$HEIGHT" | awk '{printf "%.1f", $1/10}')
+formatted_weight=$(echo "$WEIGHT" | awk '{printf "%.1f", $1/10}')
 
 # 3️⃣ Capitalize first letter of type and name
-TYPE=$(echo "$TYPE" | sed 's/.*/\u&/')
-NAME=$(echo "$NAME" | sed 's/.*/\u&/')
+type=$(echo "$TYPE" | sed 's/.*/\u&/')
+name=$(echo "$NAME" | sed 's/.*/\u&/')
 
 # 4️⃣ Print formatted sentence
-echo "$NAME is of type $TYPE, weighs ${WEIGHT_KG}kg, and is ${HEIGHT_M}m tall."
+echo "$name is of type $type, weighs ${formatted_weight}kg, and is ${formatted_height}m tall."
