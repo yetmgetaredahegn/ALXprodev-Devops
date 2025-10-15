@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# File: batchProcessing-0x04
+# Purpose: Fetch multiple Pokémon JSON in parallel with concurrency control and retries.
+# Usage: chmod +x batchProcessing-0x04 && ./batchProcessing-0x04
+
+set -uo pipefail
+
+# Config
+POKEMONS=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+DATA_DIR="pokemon_data"
+ERROR_FILE="errors.txt"
+CONCURRENCY=3        # max number of parallel jobs
+MAX_RETRIES=3        # per-pokemon retry attempts
+SLEEP_BETWEEN=1      # minimum polite pause between starting jobs (seconds)
+
+mkdir -p "$DATA_DIR"
+: > "$ERROR_FILE"    # truncate errors file
+
+# Associative arrays to map pid -> pokemon name (bash >=4)
+declare -a PIDS=()               # array of active pids
+declare -A PID2NAME=()           # pid -> pokemon name
+
+# Clean-up handler: kill any children on exit
+cleanup() {
+  echo -e "\n[cleanup] Killing background jobs..."
+  if [ "${#PIDS[@]}" -gt 0 ]; then
+    kill "${PIDS[@]}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# fetch function (runs in background)
+fetch_pokemon() {
+  local pokemon="$1"
+  local out="$DATA_DIR/${pokemon}.json"
+  local tmp="${out}.tmp"
+  local attempt=1
+  local http
+
+  while [ "$attempt" -le "$MAX_RETRIES" ]; do
+    # -s silent, -S show errors on stderr if not using -s (we use -s so capture code)
+    # -w "%{http_code}" prints the HTTP code to stdout (we capture it)
+    http=$(curl -s -w "%{http_code}" -o "$tmp" "https://pokeapi.co/api/v2/pokemon/${pokemon}" 2>/dev/null) || http="000"
+
+    # If successful (HTTP 200) move tmp -> final file atomically
+    if [ "$http" -eq 200 ]; then
+      mv -f "$tmp" "$out"
+      printf "[%s] ✅ %s saved (%s)\n" "$(date '+%H:%M:%S')" "$pokemon" "$out"
+      return 0
+    else
+      printf "[%s] ⚠️  %s attempt %d failed (HTTP=%s)\n" "$(date '+%H:%M:%S')" "$pokemon" "$attempt" "$http"
+      ((attempt++))
+      # exponential backoff (2,4,8... seconds)
+      sleep $((2 ** attempt))
+    fi
+  done
+
+  # If reached here, all attempts failed
+  printf "%s: Failed to fetch %s after %d attempts (last HTTP=%s)\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$pokemon" "$MAX_RETRIES" "${http:-000}" >> "$ERROR_FILE"
+  rm -f "$tmp"
+  return 1
+}
+
+# Helper: reap one finished background job (polling)
+reap_one() {
+  # Loop over PIDS to find one that finished
+  for i in "${!PIDS[@]}"; do
+    pid="${PIDS[i]}"
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # Child is gone; wait to collect its exit status
+      wait "$pid"
+      rc=$?
+      name="${PID2NAME[$pid]:-unknown}"
+      if [ "$rc" -eq 0 ]; then
+        printf "[%s] ✅ job finished for %s (pid=%s)\n" "$(date '+%H:%M:%S')" "$name" "$pid"
+      else
+        printf "[%s] ❌ job failed for %s (pid=%s, rc=%d) — check %s\n" "$(date '+%H:%M:%S')" "$name" "$pid" "$rc" "$ERROR_FILE"
+      fi
+      # Remove pid from arrays
+      unset 'PIDS[i]'
+      unset 'PID2NAME[$pid]'
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Main loop: spawn jobs and control concurrency
+for pokemon in "${POKEMONS[@]}"; do
+  # Start fetch in background
+  fetch_pokemon "$pokemon" &
+  pid=$!
+  PIDS+=("$pid")
+  PID2NAME["$pid"]="$pokemon"
+  printf "[%s] ➜ Started %s (pid=%s). Active jobs: %d\n" "$(date '+%H:%M:%S')" "$pokemon" "$pid" "${#PIDS[@]}"
+
+  # If we've reached the concurrency limit, wait for one to finish
+  while [ "${#PIDS[@]}" -ge "$CONCURRENCY" ]; do
+    if reap_one; then
+      # freed one slot; continue spawning
+      :
+    else
+      # nothing finished yet — sleep a short while then try again
+      sleep 0.2
+    fi
+  done
+
+  # small polite pause before starting next job
+  sleep "$SLEEP_BETWEEN"
+done
+
+# After spawning all jobs, wait for the rest to finish
+while [ "${#PIDS[@]}" -gt 0 ]; do
+  reap_one || sleep 0.1
+done
+
+echo "All fetch jobs completed. Summary:"
+if [ -s "$ERROR_FILE" ]; then
+  echo "  Some errors occurred. See $ERROR_FILE"
+  echo "  (Tail of $ERROR_FILE):"
+  tail -n 10 "$ERROR_FILE"
+else
+  echo "  No errors logged."
+fi
+
