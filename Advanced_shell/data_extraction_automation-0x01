@@ -1,0 +1,21 @@
+#!/bin/bash
+# File: data_extraction_automation-0x01
+# Purpose: Extract Pikachu's info from data.json and format it nicely
+# Tools used: jq, awk, sed
+
+# 1️⃣ Extract fields using jq
+NAME=$(jq -r '.name' data.json)
+HEIGHT=$(jq -r '.height' data.json)
+WEIGHT=$(jq -r '.weight' data.json)
+TYPE=$(jq -r '.types[0].type.name' data.json)
+
+# 2️⃣ Convert units (decimetres→m, hectograms→kg)
+HEIGHT_M=$(echo "$HEIGHT" | awk '{printf "%.1f", $1/10}')
+WEIGHT_KG=$(echo "$WEIGHT" | awk '{printf "%.1f", $1/10}')
+
+# 3️⃣ Capitalize first letter of type and name
+TYPE=$(echo "$TYPE" | sed 's/.*/\u&/')
+NAME=$(echo "$NAME" | sed 's/.*/\u&/')
+
+# 4️⃣ Print formatted sentence
+echo "$NAME is of type $TYPE, weighs ${WEIGHT_KG}kg, and is ${HEIGHT_M}m tall."
